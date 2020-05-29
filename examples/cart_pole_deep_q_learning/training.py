@@ -5,6 +5,10 @@ import gym
 import numpy as np
 import tensorflow as tf
 
+EPSILON_DECAY = 0.99
+EPSILON_MIN = 0.1
+BATCH_SIZE = 50
+
 
 class CartPoleAgent:
     def __init__(self, environment):
@@ -14,7 +18,7 @@ class CartPoleAgent:
         self.gamma = 0.95
         self.epsilon = 0.99
         self.replay_buffer = ReplayBuffer(maxlen=10000)
-        self.buffer_size = 50
+        self.buffer_size = BATCH_SIZE
 
     def get_action(self, state):
         if np.random.rand() < self.epsilon:
@@ -45,13 +49,12 @@ class CartPoleAgent:
             q_values = self.q_network.model(states)
             extracted = tf.reduce_sum(tf.multiply(q_values, one_hot_action), axis=1)
             loss = tf.reduce_sum((extracted - q_target) ** 2)
-            # print(f'loss: {loss}')
 
         grads = tape.gradient(loss, self.q_network.model.trainable_variables)
         self.q_network.minimizer.apply_gradients(list(zip(grads, self.q_network.model.trainable_variables)))
 
         if done:
-            self.epsilon = max(0.1, 0.99 * self.epsilon)
+            self.epsilon = max(EPSILON_MIN, EPSILON_DECAY * self.epsilon)
 
     def train(self, state, action, next_state, reward, done):
 
@@ -69,7 +72,7 @@ class CartPoleAgent:
         self.q_network.minimizer.apply_gradients(list(zip(grads, self.q_network.model.trainable_variables)))
 
         if done:
-            self.epsilon = max(0.1, 0.99 * self.epsilon)
+            self.epsilon = max(EPSILON_MIN, EPSILON_DECAY * self.epsilon)
 
 
 class ReplayBuffer:
@@ -101,26 +104,27 @@ class QNetwork:
         return self.model.predict(arg)
 
 
-BATCH_SIZE = 50
-env_names = ['CartPole-v0', 'MountainCar-v0', 'MsPacman-v0', 'Hopper-v2']
+if __name__ == '__main__':
 
-env = gym.make(env_names[0])
+    env_names = ['CartPole-v0', 'MountainCar-v0', 'MsPacman-v0', 'Hopper-v2', 'Acrobot-v1']
 
-env.reset()
+    env = gym.make(env_names[0])
 
-agent = CartPoleAgent(env)
-num_episodes = 500
-for ep in range(num_episodes):
-    total_reward = 0
-    done = False
-    state = env.reset()
-    while not done:
-        action = agent.get_action(state)
-        next_state, reward, done, info = env.step(action)
-        agent.train(state, action, next_state, reward, done)
-        # agent.train_with_replay(state, action, next_state, reward, done)
-        env.render()
-        total_reward += reward
-        state = next_state
+    env.reset()
 
-    print(f'episode: {ep}, total reward: {total_reward}')
+    agent = CartPoleAgent(env)
+    num_episodes = 500
+    for ep in range(num_episodes):
+        total_reward = 0
+        done = False
+        state = env.reset()
+        while not done:
+            action = agent.get_action(state)
+            next_state, reward, done, info = env.step(action)
+            # agent.train(state, action, next_state, reward, done)
+            agent.train_with_replay(state, action, next_state, reward, done)
+            env.render()
+            total_reward += reward
+            state = next_state
+
+        print(f'episode: {ep}, total reward: {total_reward}')
