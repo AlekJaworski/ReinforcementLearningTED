@@ -1,17 +1,9 @@
-from time import sleep
+from collections import deque
+import random
 
 import gym
 import numpy as np
 import tensorflow as tf
-
-
-# input_dimensions = 3
-# model = tf.keras.models.Sequential([
-#     tf.keras.layers.Dense(16, activation='relu', input_shape=(input_dimensions,)),
-#     tf.keras.layers.Dropout(0.2),
-#     tf.keras.layers.Dense(2),
-#     tf.keras.layers.Softmax()
-# ])
 
 
 class CartPoleAgent:
@@ -21,25 +13,38 @@ class CartPoleAgent:
         self.q_network: QNetwork = QNetwork(self.state_dim, self.action_dim)
         self.gamma = 0.95
         self.epsilon = 0.99
+        self.replay_buffer = ReplayBuffer(maxlen=10000)
+        self.buffer_size = 50
 
     def get_action(self, state):
         if np.random.rand() < self.epsilon:
             return env.action_space.sample()
-        q_vals = self.q_network.evaluate(state)
+        q_vals = self.q_network.evaluate(np.array([state]))
         action = np.argmax(q_vals)
         return action
 
-    def train(self, state, action, next_state, reward, done):
-        q_next_state = self.q_network.evaluate(next_state)
-        q_next_state = (1 - done) * q_next_state  # if done then set to 0
-        q_target = reward + self.gamma * np.max(q_next_state)
-        one_hot_action = tf.one_hot(action, depth=self.action_dim)
+    def train_with_replay(self, state, action, next_state, reward, done):
+        self.replay_buffer.add((state, action, next_state, reward, done))
 
-        state_dummy = state.reshape(1, 4)
+        samples = self.replay_buffer.sample(min(self.buffer_size, BATCH_SIZE))
+        states, actions, next_states, rewards, dones = samples
+        states.append(state)
+        states = np.array(states)
+
+        actions.append(action)
+        next_states.append(next_state)
+        rewards.append(reward)
+        dones.append(done)
+
+        q_next_states = self.q_network.evaluate(next_states)
+        q_next_states[dones] = np.zeros(self.action_dim)  # if done then set to 0
+        q_target = reward + self.gamma * np.max(q_next_states, axis=1)
+        one_hot_action = tf.one_hot(actions, depth=self.action_dim)
+
         with tf.GradientTape() as tape:
-            q_values = self.q_network.model(state_dummy)
-            extracted = tf.reduce_sum(tf.multiply(q_values, one_hot_action))
-            loss = (extracted - q_target) ** 2
+            q_values = self.q_network.model(states)
+            extracted = tf.reduce_sum(tf.multiply(q_values, one_hot_action), axis=1)
+            loss = tf.reduce_sum((extracted - q_target) ** 2)
             # print(f'loss: {loss}')
 
         grads = tape.gradient(loss, self.q_network.model.trainable_variables)
@@ -47,6 +52,39 @@ class CartPoleAgent:
 
         if done:
             self.epsilon = max(0.1, 0.99 * self.epsilon)
+
+    def train(self, state, action, next_state, reward, done):
+
+        q_next_states = self.q_network.evaluate([next_state])
+        q_next_states[[done]] = np.zeros(self.action_dim)  # if done then set to 0
+        q_target = reward + self.gamma * np.max(q_next_states, axis=1)
+        one_hot_action = tf.one_hot([action], depth=self.action_dim)
+
+        with tf.GradientTape() as tape:
+            q_values = self.q_network.model(np.array([state]))
+            extracted = tf.reduce_sum(tf.multiply(q_values, one_hot_action), axis=1)
+            loss = tf.reduce_sum((extracted - q_target) ** 2)
+
+        grads = tape.gradient(loss, self.q_network.model.trainable_variables)
+        self.q_network.minimizer.apply_gradients(list(zip(grads, self.q_network.model.trainable_variables)))
+
+        if done:
+            self.epsilon = max(0.1, 0.99 * self.epsilon)
+
+
+class ReplayBuffer:
+    def __init__(self, maxlen):
+        self.buffer = deque(maxlen=maxlen)
+
+    def add(self, experience):
+        self.buffer.append(experience)
+
+    def sample(self, batch_size):
+        sample_size = min(len(self.buffer), batch_size)
+
+        samples = random.choices(self.buffer, k=sample_size)
+
+        return list(map(list, zip(*samples)))
 
 
 class QNetwork:
@@ -58,11 +96,12 @@ class QNetwork:
         self.model: tf.keras.Model = model
         self.minimizer = tf.optimizers.Adam(learning_rate=1e-3)
 
-    def evaluate(self, state):
-        arg = state.reshape(1, 4)
+    def evaluate(self, states):
+        arg = np.array(states)
         return self.model.predict(arg)
 
 
+BATCH_SIZE = 50
 env_names = ['CartPole-v0', 'MountainCar-v0', 'MsPacman-v0', 'Hopper-v2']
 
 env = gym.make(env_names[0])
@@ -77,12 +116,11 @@ for ep in range(num_episodes):
     state = env.reset()
     while not done:
         action = agent.get_action(state)
-        # print(f'action: {action}')
         next_state, reward, done, info = env.step(action)
         agent.train(state, action, next_state, reward, done)
+        # agent.train_with_replay(state, action, next_state, reward, done)
         env.render()
         total_reward += reward
         state = next_state
-    # sleep(0.5)
 
     print(f'episode: {ep}, total reward: {total_reward}')
